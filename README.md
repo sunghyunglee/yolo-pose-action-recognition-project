@@ -20,9 +20,11 @@
 
 ### Architecture
 
-사전학습 **YOLO Pose(`yolo11n-pose.pt`)** 로 사람 관절 17개를 찾고, 그 좌표를 **38-D Frame Feature → 30 Step Sequence** 로 바꿔 **Random Forest 기준선**으로 동작을 분류합니다. 데이터는 **사람 단위(S01 Train · S02 Validation · S03 Test)** 로 나누고, 조건 비교는 Validation 으로만 한 뒤 Test 는 **한 번만** 확인합니다.
+사전학습 **YOLO Pose(`yolo11n-pose.pt`)** 로 사람 관절 17개를 찾고, 그 좌표를 **38-D Frame Feature → 30 Step Sequence** 로 바꿔 **Random Forest 기준선**으로 동작을 분류하고, 같은 모델을 **저장 영상 · IP Webcam 실시간 입력**에 연결합니다. 데이터는 **사람 단위(S01 Train · S02 Validation · S03 Test)** 로 나누고, 조건 비교는 Validation 으로만 한 뒤 Test 는 **한 번만** 확인합니다.
 
 ![YOLO Pose 동작인식 Architecture](docs/images/architecture.png)
+
+*위 그림은 학습 Pipeline(1 ~ 6일차)입니다. 7일차 실시간 Pipeline 은 아래 [실시간 Pipeline](#실시간-pipeline-7일차) 에 있습니다.*
 
 <br>
 
@@ -36,7 +38,7 @@ Pose → Keypoint → Feature → Sequence → Dataset → Action Model → (Rea
 
 목표는 높은 점수가 아니라 **결과가 틀렸을 때 어느 단계에서 처음 틀렸는지 따라갈 수 있는 Pipeline** 입니다. 단계마다 품질을 확인하고, 같은 사람의 데이터가 Train · Test 에 섞이지 않게 나누고, Test 를 본 뒤에는 기준을 고치지 않았습니다.
 
-> 현재 **1 ~ 6일차**까지 반영했습니다. 7 ~ 10일차(실시간 · Tracking · 보강 · 실패분석)는 진행하면서 추가합니다.
+> 현재 **1 ~ 7일차**까지 반영했습니다. 8 ~ 10일차(Tracking · 보강 · 실패분석)는 진행하면서 추가합니다.
 
 <br>
 
@@ -50,8 +52,9 @@ Pose → Keypoint → Feature → Sequence → Dataset → Action Model → (Rea
 | 4일차 · Action Sequence | 6개 Action Clip 의 38-D 를 시간순 연결 | Clip 별 Sequence CSV · Keyframe · 단계별 점검 `19` ~ `24` |
 | 5일차 · Dataset · Split | 3명 × 6동작 = **MP4 18개** → Keypoint CSV · 자동 QA + Human QA · 사람 단위 Split | AUTO_PASS **13** · CHECK **5** → 사람 확인 PASS · 승인 Clip **18** · Train / Val / Test **6 / 6 / 6** · 누수 검사 OK |
 | 6일차 · RF 기준선 | 30 Step × 38-D = **1,140 Feature** · Random Forest (Tree 300 · seed 42) | Validation(S02) 한 장면 38 Feature **0.6667 (4/6)** vs 30 Step **0.5000 (3/6)** · Macro F1 0.5556 vs 0.4444 |
+| 7일차 · 실시간 연결 | 최근 **5초** Sliding Window → 6일차와 같은 30 Step 으로 Resampling → 같은 Random Forest · Confidence **0.55** 미만은 UNKNOWN · 최근 **5개 중 3표** 안정화 | 저장 MP4 → IP Webcam 순서로 같은 Runtime 실행 · Mini Challenge 로 Runtime 변수 **하나만** 바꿔 같은 MP4 재실행 비교 |
 
-6일차 숫자는 Validation **6 Clip** 결과입니다. 이번 데이터에서는 30 Step Sequence 가 한 장면보다 1개 더 틀렸지만, Clip 수가 적어 일반화하지 않습니다(강사님 자료는 둘 다 0.6667 / 0.5556).
+6일차 숫자는 Validation **6 Clip** 결과입니다. 7일차 Runtime Match 값은 정식 Test Accuracy 가 아니라 실시간 동작 확인용이라 성능 숫자로 쓰지 않습니다. 이번 데이터에서는 30 Step Sequence 가 한 장면보다 1개 더 틀렸지만, Clip 수가 적어 일반화하지 않습니다(강사님 자료는 둘 다 0.6667 / 0.5556).
 
 **AI 결과를 그대로 믿지 않은 이유**
 
@@ -70,7 +73,41 @@ Pose → Keypoint → Feature → Sequence → Dataset → Action Model → (Rea
 | 사람 단위 Split | S01 Train · S02 Validation · S03 Test · Sequence 만들기 전에 배정(`configs/day05_subject_split.json`) |
 | Validation 으로만 선택 | 38 · 39번 비교는 Validation 으로 · Test(40번)는 고른 뒤 1회 |
 | 원본과 Feature 분리 | 5일차에 원본 Keypoint 저장 → 6일차에 Feature 다시 계산 · Feature 를 바꿔도 Pose 를 다시 돌리지 않음 |
-| 설정은 파일로 | 모델 · Confidence · Sequence 길이 · RF 설정은 `configs/*.json` 에서 읽고 코드에 하드코딩하지 않음 |
+| 설정은 파일로 | 모델 · Confidence · Sequence 길이 · RF · Runtime 설정은 `configs/*.json` 에서 읽고 코드에 하드코딩하지 않음 |
+| 지연은 나눠서 본다 | 느리면 모델부터 의심하지 않고 카메라 · 네트워크 / AI Processing / Sliding Window · 안정화 대기 중 어디인지 구분 |
+
+<br>
+
+### 실시간 Pipeline (7일차)
+
+6일차에 학습한 **같은 Random Forest** 를 끝없이 들어오는 Frame 에 연결했습니다. 모델이 바뀐 것이 아니라, **실시간 Stream 에서 모델 입력을 만드는 방식**이 추가된 것입니다.
+
+```text
+Saved MP4 / IP Webcam
+        ↓
+YOLO Pose → 38-D Frame Feature (학습 때와 같은 계산)
+        ↓
+Timed Sliding Window (최근 5초 · 80% 이상 채워지면 예측)
+        ↓
+6일차 Sequence Step(30)으로 Resampling → 1,140 Feature
+        ↓
+Random Forest → Raw Prediction
+        ↓
+Confidence Threshold 0.55 → Action / UNKNOWN
+        ↓
+Prediction Stabilization (최근 5개 중 3표) → Stable Action
+```
+
+| 배운 점 | 내용 |
+|---|---|
+| Window Seconds ≠ Sequence Steps | Window 는 "최근 몇 초를 볼까"(5초), Sequence Step 은 "모델에 몇 칸으로 넣을까"(30) · 5초 안의 Frame 을 30 Step 으로 다시 맞춤 |
+| 처음 몇 초는 WARMING_UP | 5초 × 0.8 = 약 4초가 쌓여야 첫 예측 · 오류가 아님 |
+| UNKNOWN 은 보류 | Confidence 가 낮으면 억지로 고르지 않고 UNKNOWN 으로 남김 |
+| 안정화의 대가 | Label 흔들림은 줄지만 동작이 바뀐 뒤 반응이 늦어짐 |
+| Runtime Match ≠ Test Accuracy | 실시간 확인용 값이라 6일차 Test 와 같은 성능 지표로 보지 않음 |
+| 지연 구분 | 영상 자체가 늦음 = 카메라 · 네트워크 / 첫 결과가 늦음 = Sliding Window / Label 이 늦게 바뀜 = 안정화 |
+
+**Mini Challenge** — Action 하나를 골라 새 MP4 를 직접 찍고, 기본 Runtime → **변수 하나만** 바꿔 같은 MP4 재실행 → Baseline vs Experiment 비교 → 같은 Action 을 IP Webcam 에서 수행해 Runtime Log 를 분석했습니다. 이 영상은 Train 데이터가 아니라 **학습된 모델을 확인하는 Runtime 입력**입니다.
 
 <br>
 
@@ -88,15 +125,15 @@ Pose → Keypoint → Feature → Sequence → Dataset → Action Model → (Rea
 
 | 폴더 | 무엇인가 | 핵심 |
 |---|---|---|
-| [**scripts**](scripts) | 일차별 실습 코드 (`00` ~ `40`) | 번호 순서대로 프로젝트 루트에서 실행 |
-| [**src**](src) | 공통 함수 | `common.py` 설정 · 경로 · `pose_utils.py` COCO 17 · `feature_utils.py` 38-D · `sequence_utils.py` Sequence |
-| [**configs**](configs) | 설정 파일 | `project.json` Pose 기준 · `day05_subject_split.json` 사람 배정 · `day06_baseline.json` RF 설정 |
+| [**scripts**](scripts) | 일차별 실습 코드 (`00` ~ `45`) | 번호 순서대로 프로젝트 루트에서 실행 |
+| [**src**](src) | 공통 함수 | `common.py` 설정 · 경로 · `pose_utils.py` COCO 17 · `feature_utils.py` 38-D · `sequence_utils.py` Sequence · `realtime_utils.py` Sliding Window · 안정화 · FPS |
+| [**configs**](configs) | 설정 파일 | `project.json` Pose 기준 · `day05_subject_split.json` 사람 배정 · `day06_baseline.json` RF 설정 · `day07_realtime.json` Runtime 설정 |
 | [**docs**](docs) | 문서 · 그림 | Architecture · 4 ~ 6일차 파이프라인 흐름도 · 파일 추적표 |
 
-| 일⁠차 | 1 | 2 | 3 | 4 | 5 | 6 |
-|---|---|---|---|---|---|---|
-| 주제 | Pose 입력 | Keypoint 품질 | 38-D Feature | Action Sequence | QA · Split | RF 기준선 |
-| 코드 | `00~05` | `06~10` | `11~17` | `19~24` | `25~32` | `33~40` |
+| 일⁠차 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|
+| 주제 | Pose 입력 | Keypoint 품질 | 38-D Feature | Action Sequence | QA · Split | RF 기준선 | 실시간 |
+| 코드 | `00~05` | `06~10` | `11~17` | `19~24` | `25~32` | `33~40` | `41~45` |
 
 <br><br>
 
@@ -138,6 +175,16 @@ python scripts/36_evaluate_validation.py
 python scripts/38_compare_static_vs_sequence.py
 python scripts/40_evaluate_test.py
 ```
+
+실시간 (7일차) — 6일차 모델이 있어야 합니다
+
+```bash
+python scripts/41_check_day07_inputs.py
+python scripts/42_realtime_action_video.py --source data/day05/videos/S02_A006_T01.mp4
+python scripts/44_ip_webcam_action_realtime.py --url http://192.168.0.10:8080/video
+```
+
+`--url` 은 폰 IP Webcam 앱에 표시되는 주소로 바꿉니다. IP Webcam 화면에서 숫자키 `1` ~ `6` 으로 지금 수행할 목표 Action 을 고릅니다.
 
 5일차 Human QA(28번)는 실행 전에 `keypoint_clip_review.csv` 의 `human_decision` 칸에 PASS · RESHOOT · EXCLUDE 를 직접 적습니다. 결과는 `reports/dayXX/`, 모델은 `artifacts/day06/rf_action_baseline.joblib` 에 저장됩니다.
 
