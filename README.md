@@ -20,11 +20,11 @@
 
 ### Architecture
 
-사전학습 **YOLO Pose(`yolo11n-pose.pt`)** 로 사람 관절 17개를 찾고, 그 좌표를 **38-D Frame Feature → 30 Step Sequence** 로 바꿔 **Random Forest 기준선**으로 동작을 분류하고, 같은 모델을 **저장 영상 · IP Webcam 실시간 입력**에 연결합니다. 데이터는 **사람 단위(S01 Train · S02 Validation · S03 Test)** 로 나누고, 조건 비교는 Validation 으로만 한 뒤 Test 는 **한 번만** 확인합니다.
+사전학습 **YOLO Pose(`yolo11n-pose.pt`)** 로 사람 관절 17개를 찾고, 그 좌표를 **38-D Frame Feature → 30 Step Sequence** 로 바꿔 **Random Forest 기준선**으로 동작을 분류하고, 같은 모델을 **저장 영상 · IP Webcam 실시간 입력**에 연결한 뒤, **ByteTrack 으로 여러 사람을 Track ID 별로 따로** 판단합니다. 데이터는 **사람 단위(S01 Train · S02 Validation · S03 Test)** 로 나누고, 조건 비교는 Validation 으로만 한 뒤 Test 는 **한 번만** 확인합니다.
 
 ![YOLO Pose 동작인식 Architecture](docs/images/architecture.png)
 
-*위 그림은 학습 Pipeline(1 ~ 6일차)입니다. 7일차 실시간 Pipeline 은 아래 [실시간 Pipeline](#실시간-pipeline-7일차) 에 있습니다.*
+*위 그림은 학습 Pipeline(1 ~ 6일차)입니다. 7일차 실시간 Pipeline 은 [실시간 Pipeline](#실시간-pipeline-7일차), 8일차 다중 인물은 [다중 인물 Tracking](#다중-인물-tracking-8일차) 에 있습니다.*
 
 <br>
 
@@ -38,7 +38,7 @@ Pose → Keypoint → Feature → Sequence → Dataset → Action Model → (Rea
 
 목표는 높은 점수가 아니라 **결과가 틀렸을 때 어느 단계에서 처음 틀렸는지 따라갈 수 있는 Pipeline** 입니다. 단계마다 품질을 확인하고, 같은 사람의 데이터가 Train · Test 에 섞이지 않게 나누고, Test 를 본 뒤에는 기준을 고치지 않았습니다.
 
-> 현재 **1 ~ 7일차**까지 반영했습니다. 8 ~ 10일차(Tracking · 보강 · 실패분석)는 진행하면서 추가합니다.
+> 현재 **1 ~ 8일차**까지 반영했습니다. 9 ~ 10일차(보강 · 실패분석)는 진행하면서 추가합니다.
 
 <br>
 
@@ -53,8 +53,9 @@ Pose → Keypoint → Feature → Sequence → Dataset → Action Model → (Rea
 | 5일차 · Dataset · Split | 3명 × 6동작 = **MP4 18개** → Keypoint CSV · 자동 QA + Human QA · 사람 단위 Split | AUTO_PASS **13** · CHECK **5** → 사람 확인 PASS · 승인 Clip **18** · Train / Val / Test **6 / 6 / 6** · 누수 검사 OK |
 | 6일차 · RF 기준선 | 30 Step × 38-D = **1,140 Feature** · Random Forest (Tree 300 · seed 42) | Validation(S02) 한 장면 38 Feature **0.6667 (4/6)** vs 30 Step **0.5000 (3/6)** · Macro F1 0.5556 vs 0.4444 |
 | 7일차 · 실시간 연결 | 최근 **5초** Sliding Window → 6일차와 같은 30 Step 으로 Resampling → 같은 Random Forest · Confidence **0.55** 미만은 UNKNOWN · 최근 **5개 중 3표** 안정화 | 저장 MP4 → IP Webcam 순서로 같은 Runtime 실행 · Mini Challenge 로 Runtime 변수 **하나만** 바꿔 같은 MP4 재실행 비교 |
+| 8일차 · 다중 인물 Tracking | `model.track(persist=True)` + **ByteTrack** 으로 Frame 마다 사람에게 Track ID 를 붙여 이어 감 · Track ID 별로 Feature Buffer · 안정화를 **따로** 둠 · **2초** 동안 안 보이면 그 사람 상태 삭제 | SBU 영상 3개(악수 · 포옹 · 발차기)로 기본 · 가림 · 빠른 상호작용 Tracking 비교 · 같은 Random Forest 를 사람마다 따로 적용 · IP Webcam 다중 인물 Runtime Log |
 
-6일차 숫자는 Validation **6 Clip** 결과입니다. 7일차 Runtime Match 값은 정식 Test Accuracy 가 아니라 실시간 동작 확인용이라 성능 숫자로 쓰지 않습니다. 이번 데이터에서는 30 Step Sequence 가 한 장면보다 1개 더 틀렸지만, Clip 수가 적어 일반화하지 않습니다(강사님 자료는 둘 다 0.6667 / 0.5556).
+6일차 숫자는 Validation **6 Clip** 결과입니다. 7 · 8일차 Runtime 값은 정식 Test Accuracy 가 아니라 실시간 동작 확인용이라 성능 숫자로 쓰지 않습니다. 이번 데이터에서는 30 Step Sequence 가 한 장면보다 1개 더 틀렸지만, Clip 수가 적어 일반화하지 않습니다(강사님 자료는 둘 다 0.6667 / 0.5556).
 
 **AI 결과를 그대로 믿지 않은 이유**
 
@@ -74,6 +75,7 @@ Pose → Keypoint → Feature → Sequence → Dataset → Action Model → (Rea
 | Validation 으로만 선택 | 38 · 39번 비교는 Validation 으로 · Test(40번)는 고른 뒤 1회 |
 | 원본과 Feature 분리 | 5일차에 원본 Keypoint 저장 → 6일차에 Feature 다시 계산 · Feature 를 바꿔도 Pose 를 다시 돌리지 않음 |
 | 설정은 파일로 | 모델 · Confidence · Sequence 길이 · RF · Runtime 설정은 `configs/*.json` 에서 읽고 코드에 하드코딩하지 않음 |
+| 사람마다 따로 기억 | 여러 사람의 Frame 을 한 Buffer 에 섞지 않고 Track ID 별 Buffer · 안정화 상태를 따로 관리 (`src/multi_person_utils.py`) |
 | 지연은 나눠서 본다 | 느리면 모델부터 의심하지 않고 카메라 · 네트워크 / AI Processing / Sliding Window · 안정화 대기 중 어디인지 구분 |
 
 <br>
@@ -111,6 +113,48 @@ Prediction Stabilization (최근 5개 중 3표) → Stable Action
 
 <br>
 
+### 다중 인물 Tracking (8일차)
+
+7일차 Runtime 은 화면에 **한 사람**만 있다고 가정했습니다. 두 사람이 있으면 두 사람의 관절이 한 Buffer 에 섞여 Sequence 가 엉망이 됩니다. 8일차는 모델은 그대로 두고, **사람을 구분해서 사람마다 따로 Sequence 를 쌓는 부분**을 추가했습니다.
+
+```text
+Saved MP4 / IP Webcam
+        ↓
+YOLO Pose + ByteTrack (model.track · persist=True) → 사람마다 Track ID
+        ↓
+Track ID 별 38-D Frame Feature (학습 때와 같은 계산)
+        ↓
+Track ID 별 Sliding Window (5초) · 안정화 (5개 중 3표)   ← 7일차 설정 그대로
+        ↓
+Track ID 별 Random Forest → Action / UNKNOWN
+        ↓
+2초 동안 안 보인 Track ID 는 상태 삭제 (lost_timeout_seconds)
+```
+
+| 코드 | 하는 일 | 결과 |
+|---|---|---|
+| `46` | 8일차 입력 점검 (SBU 영상 3개 · 6일차 모델 · 7일차 설정) | 입력 OK 여부 |
+| `47` | SBU 영상에 YOLO Pose + ByteTrack | `reports/day08/tracking/*_tracked.mp4` · `reports/day08/logs/*_tracking.csv` |
+| `48` | Tracking Log 요약 | 고유 Track ID 수 · 추적된 Frame 비율 · 두 사람이 다 잡힌 Frame 비율 · 한 Frame 최대 ID 수 · 남는 ID 수 |
+| `49` | IP Webcam 다중 인물 실시간 동작인식 (`Q` 종료 · `R` 모든 사람 상태 초기화) | `reports/day08/ip_webcam/ip_multi_<시각>.csv` |
+| `50` | 49번 Log 를 Track ID 별로 요약 | 처음 · 마지막 등장 시각 · UNKNOWN 비율 · 가장 많은 Stable Label · 평균 Confidence · 처리 FPS |
+| `51` | SBU 시나리오 3개 Tracking 결과 비교 | `reports/day08/experiments/tracking_scenario_summary.csv` |
+
+| SBU 영상 | 시나리오 | 확인할 것 |
+|---|---|---|
+| `01_sbu_shaking_hands.mp4` | BASIC_TRACKING | 두 사람이 떨어져 있을 때 ID 가 끝까지 유지되는가 |
+| `02_sbu_hugging.mp4` | OCCLUSION_TRACKING | 몸이 겹칠 때 ID 가 끊기거나 새 ID 가 생기는가 |
+| `03_sbu_kicking_challenge.mp4` | FAST_INTERACTION_TRACKING | 빠른 동작에서 ID 가 바뀌는가 |
+
+| 배운 점 | 내용 |
+|---|---|
+| Detection ≠ Tracking | Detection 은 Frame 마다 "사람이 어디 있나", Tracking 은 "앞 Frame 의 그 사람이 이 사람인가"까지 이어 줌 |
+| Buffer 는 사람 수만큼 | Track ID 별로 Buffer · 안정화를 두어야 두 사람의 동작이 섞이지 않음 |
+| ID 가 바뀌면 처음부터 | 가림 · 빠른 동작으로 새 ID 가 생기면 그 사람의 Buffer 가 비어 다시 WARMING_UP |
+| 사라진 사람 정리 | `lost_timeout_seconds` 2초가 지나면 상태를 지워 오래된 Buffer 가 남지 않게 함 |
+
+<br>
+
 ### 학습 파이프라인
 
 4 ~ 6일차 데이터가 어떤 파일 · 코드를 거쳐 모델과 평가까지 가는지 **직접 따라가며 그린 흐름도** 입니다. 정답(`action_label`)이 정답표에서 평가까지 어떻게 이어지는지 함께 표시했습니다.
@@ -125,15 +169,15 @@ Prediction Stabilization (최근 5개 중 3표) → Stable Action
 
 | 폴더 | 무엇인가 | 핵심 |
 |---|---|---|
-| [**scripts**](scripts) | 일차별 실습 코드 (`00` ~ `45`) | 번호 순서대로 프로젝트 루트에서 실행 |
-| [**src**](src) | 공통 함수 | `common.py` 설정 · 경로 · `pose_utils.py` COCO 17 · `feature_utils.py` 38-D · `sequence_utils.py` Sequence · `realtime_utils.py` Sliding Window · 안정화 · FPS |
-| [**configs**](configs) | 설정 파일 | `project.json` Pose 기준 · `day05_subject_split.json` 사람 배정 · `day06_baseline.json` RF 설정 · `day07_realtime.json` Runtime 설정 |
+| [**scripts**](scripts) | 일차별 실습 코드 (`00` ~ `51`) | 번호 순서대로 프로젝트 루트에서 실행 |
+| [**src**](src) | 공통 함수 | `common.py` 설정 · 경로 · `pose_utils.py` COCO 17 · `feature_utils.py` 38-D · `sequence_utils.py` Sequence · `realtime_utils.py` Sliding Window · 안정화 · FPS · `multi_person_utils.py` Track ID 별 상태 관리 |
+| [**configs**](configs) | 설정 파일 | `project.json` Pose 기준 · `day05_subject_split.json` 사람 배정 · `day06_baseline.json` RF 설정 · `day07_realtime.json` Runtime 설정 · `day08_multi_person.json` Tracker · 사라진 사람 정리 시간 |
 | [**docs**](docs) | 문서 · 그림 | Architecture · 4 ~ 6일차 파이프라인 흐름도 · 파일 추적표 |
 
-| 일⁠차 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
-|---|---|---|---|---|---|---|---|
-| 주제 | Pose 입력 | Keypoint 품질 | 38-D Feature | Action Sequence | QA · Split | RF 기준선 | 실시간 |
-| 코드 | `00~05` | `06~10` | `11~17` | `19~24` | `25~32` | `33~40` | `41~45` |
+| 일⁠차 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| 주제 | Pose 입력 | Keypoint 품질 | 38-D Feature | Action Sequence | QA · Split | RF 기준선 | 실시간 | 다중 인물 |
+| 코드 | `00~05` | `06~10` | `11~17` | `19~24` | `25~32` | `33~40` | `41~45` | `46~51` |
 
 <br><br>
 
@@ -161,6 +205,7 @@ python scripts/00_check_environment.py
 
 ```text
 data/day01/  data/day02/  data/day03/  data/day04/  data/day05/videos/  (S01_A001_T01.mp4 ~ S03_A006_T01.mp4)
+data/day08/videos/  (01_sbu_shaking_hands.mp4 · 02_sbu_hugging.mp4 · 03_sbu_kicking_challenge.mp4)
 ```
 
 **4단계 · 실행** — 터미널 위치는 프로젝트 루트, 코드는 번호 순서대로
@@ -184,7 +229,18 @@ python scripts/42_realtime_action_video.py --source data/day05/videos/S02_A006_T
 python scripts/44_ip_webcam_action_realtime.py --url http://192.168.0.10:8080/video
 ```
 
-`--url` 은 폰 IP Webcam 앱에 표시되는 주소로 바꿉니다. IP Webcam 화면에서 숫자키 `1` ~ `6` 으로 지금 수행할 목표 Action 을 고릅니다.
+다중 인물 (8일차) — 6일차 모델 · 7일차 설정이 있어야 합니다
+
+```bash
+python scripts/46_check_day08_inputs.py
+python scripts/47_track_sbu_video.py --source data/day08/videos/01_sbu_shaking_hands.mp4
+python scripts/48_analyze_tracking_log.py --log reports/day08/logs/01_sbu_shaking_hands_tracking.csv
+python scripts/51_compare_tracking_scenarios.py
+python scripts/49_ip_webcam_multi_person_action.py --url http://192.168.0.10:8080/video
+python scripts/50_analyze_multi_person_log.py
+```
+
+51번은 SBU 영상 3개 모두 47 → 48번을 돌린 뒤 실행합니다. `--url` 은 폰 IP Webcam 앱에 표시되는 주소로 바꿉니다. IP Webcam 화면에서 숫자키 `1` ~ `6` 으로 지금 수행할 목표 Action 을 고릅니다.
 
 5일차 Human QA(28번)는 실행 전에 `keypoint_clip_review.csv` 의 `human_decision` 칸에 PASS · RESHOOT · EXCLUDE 를 직접 적습니다. 결과는 `reports/dayXX/`, 모델은 `artifacts/day06/rf_action_baseline.joblib` 에 저장됩니다.
 

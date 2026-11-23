@@ -20,11 +20,11 @@
 
 ### Architecture
 
-A pretrained **YOLO Pose (`yolo11n-pose.pt`)** finds 17 body joints. Those coordinates become a **38-D Frame Feature → 30-step Sequence**, and a **Random Forest baseline** classifies the action; the same model is then connected to **saved video and live IP Webcam input**. The data is split **by person (S01 Train · S02 Validation · S03 Test)**; settings are compared on Validation only, and Test is checked **once**.
+A pretrained **YOLO Pose (`yolo11n-pose.pt`)** finds 17 body joints. Those coordinates become a **38-D Frame Feature → 30-step Sequence**, and a **Random Forest baseline** classifies the action; the same model is then connected to **saved video and live IP Webcam input**, and **ByteTrack keeps several people apart by Track ID** so each person is judged separately. The data is split **by person (S01 Train · S02 Validation · S03 Test)**; settings are compared on Validation only, and Test is checked **once**.
 
 ![YOLO Pose Action Recognition Architecture](docs/images/architecture_en.png)
 
-*This diagram shows the training pipeline (Day 1 ~ 6). The Day 7 realtime pipeline is in [Realtime Pipeline](#realtime-pipeline-day-7) below.*
+*This diagram shows the training pipeline (Day 1 ~ 6). The Day 7 realtime pipeline is in [Realtime Pipeline](#realtime-pipeline-day-7) and Day 8 multi-person tracking is in [Multi-Person Tracking](#multi-person-tracking-day-8).*
 
 <br>
 
@@ -38,7 +38,7 @@ Pose → Keypoint → Feature → Sequence → Dataset → Action Model → (Rea
 
 The goal is not a high score but **a pipeline where, when a result is wrong, you can trace the first stage that went wrong**. Quality is checked at every stage, data from the same person never mixes across Train and Test, and criteria were not changed after looking at Test.
 
-> **Day 1 ~ 7** are included so far. Day 8 ~ 10 (tracking · augmentation · failure analysis) will be added as the course goes on.
+> **Day 1 ~ 8** are included so far. Day 9 ~ 10 (augmentation · failure analysis) will be added as the course goes on.
 
 <br>
 
@@ -53,8 +53,9 @@ The goal is not a high score but **a pipeline where, when a result is wrong, you
 | Day 5 · Dataset · Split | 3 people × 6 actions = **18 MP4** → keypoint CSV · auto QA + human QA · split by person | AUTO_PASS **13** · CHECK **5** → human-checked PASS · approved clips **18** · Train / Val / Test **6 / 6 / 6** · leakage check OK |
 | Day 6 · RF baseline | 30 steps × 38-D = **1,140 features** · Random Forest (300 trees · seed 42) | Validation (S02): single frame 38 features **0.6667 (4/6)** vs 30-step **0.5000 (3/6)** · Macro F1 0.5556 vs 0.4444 |
 | Day 7 · Realtime | Last **5 s** sliding window → resampled to the same 30 steps as Day 6 → same Random Forest · confidence below **0.55** = UNKNOWN · stabilized by **3 of the last 5** votes | Same runtime run on saved MP4 first, then IP Webcam · Mini Challenge reruns the same MP4 with **one** runtime variable changed |
+| Day 8 · Multi-person tracking | `model.track(persist=True)` + **ByteTrack** keeps a Track ID on each person across frames · a separate feature buffer · stabilizer per Track ID · a person's state is dropped after **2 s** unseen | 3 SBU videos (shaking hands · hugging · kicking) compare basic · occlusion · fast-interaction tracking · same Random Forest applied per person · IP Webcam multi-person runtime log |
 
-Day 6 numbers come from **6 Validation clips**. The Day 7 runtime match value is a live check, not a formal test accuracy, so it is not used as a performance number. On this data the 30-step sequence missed one more clip than the single frame, but with so few clips this is not generalized (the instructor's material shows 0.6667 / 0.5556 for both).
+Day 6 numbers come from **6 Validation clips**. Day 7 · 8 runtime values are live checks, not a formal test accuracy, so they are not used as performance numbers. On this data the 30-step sequence missed one more clip than the single frame, but with so few clips this is not generalized (the instructor's material shows 0.6667 / 0.5556 for both).
 
 **Why AI output was not taken at face value**
 
@@ -74,6 +75,7 @@ Day 6 numbers come from **6 Validation clips**. The Day 7 runtime match value is
 | Choose on Validation only | Comparisons #38 · #39 use Validation · Test (#40) runs once after choosing |
 | Raw data apart from features | Raw keypoints saved on Day 5 → features rebuilt on Day 6 · changing features does not require running Pose again |
 | Settings in files | Model · confidence · sequence length · RF · runtime settings are read from `configs/*.json`, not hard-coded |
+| Remember each person apart | Frames from different people never share one buffer; buffer and stabilizer state are kept per Track ID (`src/multi_person_utils.py`) |
 | Split the delay | When it feels slow, don't blame the model first: separate camera · network / AI processing / sliding window · stabilization wait |
 
 <br>
@@ -111,6 +113,48 @@ Prediction Stabilization (3 of last 5) → Stable Action
 
 <br>
 
+### Multi-Person Tracking (Day 8)
+
+The Day 7 runtime assumed **one person** on screen. With two people, both people's joints would mix in one buffer and the sequence breaks. Day 8 keeps the model as it is and adds **telling people apart and building a separate sequence for each person**.
+
+```text
+Saved MP4 / IP Webcam
+        ↓
+YOLO Pose + ByteTrack (model.track · persist=True) → Track ID per person
+        ↓
+38-D Frame Feature per Track ID (same calculation as training)
+        ↓
+Sliding window (5 s) · stabilization (3 of 5) per Track ID   ← Day 7 settings unchanged
+        ↓
+Random Forest per Track ID → Action / UNKNOWN
+        ↓
+State of a Track ID unseen for 2 s is dropped (lost_timeout_seconds)
+```
+
+| Code | What it does | Output |
+|---|---|---|
+| `46` | Check Day 8 inputs (3 SBU videos · Day 6 model · Day 7 settings) | Input OK or not |
+| `47` | YOLO Pose + ByteTrack on an SBU video | `reports/day08/tracking/*_tracked.mp4` · `reports/day08/logs/*_tracking.csv` |
+| `48` | Summarize a tracking log | Unique Track IDs · tracked-frame ratio · ratio of frames with both people · max IDs in a frame · extra IDs |
+| `49` | Live multi-person action recognition on IP Webcam (`Q` quit · `R` reset all people) | `reports/day08/ip_webcam/ip_multi_<time>.csv` |
+| `50` | Summarize the #49 log per Track ID | First · last seen · UNKNOWN ratio · most common stable label · mean confidence · processing FPS |
+| `51` | Compare tracking across the 3 SBU scenarios | `reports/day08/experiments/tracking_scenario_summary.csv` |
+
+| SBU video | Scenario | What to check |
+|---|---|---|
+| `01_sbu_shaking_hands.mp4` | BASIC_TRACKING | Do IDs stay the same while the two people are apart? |
+| `02_sbu_hugging.mp4` | OCCLUSION_TRACKING | Does an ID break or a new ID appear when bodies overlap? |
+| `03_sbu_kicking_challenge.mp4` | FAST_INTERACTION_TRACKING | Do IDs switch during fast motion? |
+
+| Lesson | Detail |
+|---|---|
+| Detection ≠ tracking | Detection says "where is a person in this frame"; tracking also says "is this the same person as in the last frame" |
+| One buffer per person | Buffers and stabilizers per Track ID keep two people's actions from mixing |
+| New ID = start over | If occlusion or fast motion creates a new ID, that person's buffer is empty and goes back to WARMING_UP |
+| Clean up people who left | After `lost_timeout_seconds` (2 s) the state is removed so old buffers don't linger |
+
+<br>
+
 ### Training Pipeline
 
 A flow chart **drawn by hand while tracing** how Day 4 ~ 6 data passes through files and code to the model and evaluation. It also shows how the label (`action_label`) travels from the label table to evaluation.
@@ -125,15 +169,15 @@ A flow chart **drawn by hand while tracing** how Day 4 ~ 6 data passes through f
 
 | Folder | What it is | Key |
 |---|---|---|
-| [**scripts**](scripts) | Practice code by day (`00` ~ `45`) | Run in number order from the project root |
-| [**src**](src) | Shared functions | `common.py` settings · paths · `pose_utils.py` COCO 17 · `feature_utils.py` 38-D · `sequence_utils.py` sequences · `realtime_utils.py` sliding window · stabilization · FPS |
-| [**configs**](configs) | Setting files | `project.json` Pose criteria · `day05_subject_split.json` person split · `day06_baseline.json` RF settings · `day07_realtime.json` runtime settings |
+| [**scripts**](scripts) | Practice code by day (`00` ~ `51`) | Run in number order from the project root |
+| [**src**](src) | Shared functions | `common.py` settings · paths · `pose_utils.py` COCO 17 · `feature_utils.py` 38-D · `sequence_utils.py` sequences · `realtime_utils.py` sliding window · stabilization · FPS · `multi_person_utils.py` per-Track-ID state |
+| [**configs**](configs) | Setting files | `project.json` Pose criteria · `day05_subject_split.json` person split · `day06_baseline.json` RF settings · `day07_realtime.json` runtime settings · `day08_multi_person.json` tracker · lost-person timeout |
 | [**docs**](docs) | Docs · images | Architecture · Day 4 ~ 6 pipeline chart · file trace table |
 
-| Day | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
-|---|---|---|---|---|---|---|---|
-| Topic | Pose input | Keypoint quality | 38-D Feature | Action Sequence | QA · Split | RF baseline | Realtime |
-| Code | `00~05` | `06~10` | `11~17` | `19~24` | `25~32` | `33~40` | `41~45` |
+| Day | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| Topic | Pose input | Keypoint quality | 38-D Feature | Action Sequence | QA · Split | RF baseline | Realtime | Multi-person |
+| Code | `00~05` | `06~10` | `11~17` | `19~24` | `25~32` | `33~40` | `41~45` | `46~51` |
 
 <br><br>
 
@@ -161,6 +205,7 @@ python scripts/00_check_environment.py
 
 ```text
 data/day01/  data/day02/  data/day03/  data/day04/  data/day05/videos/  (S01_A001_T01.mp4 ~ S03_A006_T01.mp4)
+data/day08/videos/  (01_sbu_shaking_hands.mp4 · 02_sbu_hugging.mp4 · 03_sbu_kicking_challenge.mp4)
 ```
 
 **Step 4 · Run** — terminal at the project root, code in number order
@@ -184,7 +229,18 @@ python scripts/42_realtime_action_video.py --source data/day05/videos/S02_A006_T
 python scripts/44_ip_webcam_action_realtime.py --url http://192.168.0.10:8080/video
 ```
 
-Replace `--url` with the address shown in the IP Webcam app on the phone. In the IP Webcam window, keys `1` ~ `6` choose the target action you are performing.
+Multi-person (Day 8) — needs the Day 6 model and Day 7 settings
+
+```bash
+python scripts/46_check_day08_inputs.py
+python scripts/47_track_sbu_video.py --source data/day08/videos/01_sbu_shaking_hands.mp4
+python scripts/48_analyze_tracking_log.py --log reports/day08/logs/01_sbu_shaking_hands_tracking.csv
+python scripts/51_compare_tracking_scenarios.py
+python scripts/49_ip_webcam_multi_person_action.py --url http://192.168.0.10:8080/video
+python scripts/50_analyze_multi_person_log.py
+```
+
+Run #51 after #47 → #48 on all 3 SBU videos. Replace `--url` with the address shown in the IP Webcam app on the phone. In the IP Webcam window, keys `1` ~ `6` choose the target action you are performing.
 
 Before Day 5 human QA (#28), write PASS · RESHOOT · EXCLUDE by hand in the `human_decision` column of `keypoint_clip_review.csv`. Results are saved in `reports/dayXX/` and the model in `artifacts/day06/rf_action_baseline.joblib`.
 
